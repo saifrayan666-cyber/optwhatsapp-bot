@@ -1,0 +1,23 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# অ্যান্ড্রয়েড টুলস ইনস্টল
+RUN apt-get update && apt-get install -y \
+    wget \
+    unzip \
+    openjdk-11-jdk \
+    && rm -rf /var/lib/apt/lists/*
+
+# ADB ইনস্টল
+RUN apt-get update && apt-get install -y adb
+
+# Tesseract OCR ইনস্টল
+RUN apt-get update && apt-get install -y tesseract-ocr
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+CMD ["python", "main.py"]
