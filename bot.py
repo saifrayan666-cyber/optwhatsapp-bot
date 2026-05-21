@@ -11,7 +11,14 @@ import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import (
+    Application, 
+    CommandHandler, 
+    CallbackQueryHandler, 
+    MessageHandler, 
+    filters,
+    ContextTypes
+)
 
 # ==================== LOGGING ====================
 logging.basicConfig(
@@ -323,71 +330,100 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-async def admin_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
-    """Handle admin panel buttons"""
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle all button clicks"""
     query = update.callback_query
+    user_id = str(update.effective_user.id)
+    data = query.data
     
+    await query.answer()
+    
+    # Admin callbacks
     if data == "admin_users":
         await show_user_list(query)
-    
     elif data == "admin_pending":
         await show_pending_list(query)
-    
     elif data == "admin_blocked":
         await show_blocked_list(query)
-    
     elif data == "admin_stats":
         await show_stats(query)
-    
     elif data == "admin_sites":
         await show_site_manager(query)
-    
     elif data == "admin_banned":
         await show_banned_words(query)
-    
     elif data == "admin_broadcast":
         await show_broadcast_menu(query)
-    
     elif data == "admin_settings":
         await show_settings(query)
-    
     elif data == "admin_close":
         await query.edit_message_text("🔒 Admin panel closed.")
     
+    # User callbacks
+    elif data == "user_select_country":
+        await show_country_menu(query, user_id)
+    elif data.startswith("user_country_"):
+        country = data.replace("user_country_", "")
+        await show_numbers_for_country(query, user_id, country)
+    elif data.startswith("user_view_"):
+        number = data.replace("user_view_", "")
+        await show_number_otps(query, user_id, number)
+    elif data.startswith("user_save_"):
+        number = data.replace("user_save_", "")
+        await save_user_number(query, user_id, number)
+    elif data == "user_my_numbers":
+        await show_my_numbers(query, user_id)
+    elif data == "user_my_otps":
+        await show_my_otps(query, user_id)
+    elif data == "user_remove_number":
+        await show_remove_menu(query, user_id)
+    elif data.startswith("user_remove_"):
+        idx = int(data.split("_")[2])
+        await remove_user_number(query, user_id, idx)
+    elif data.startswith("user_refresh_country_"):
+        country = data.replace("user_refresh_country_", "")
+        await show_numbers_for_country(query, user_id, country)
+    elif data == "user_back_menu":
+        await show_main_menu(query, user_id)
+    elif data == "user_help":
+        await show_user_help(query)
+    
+    # User management callbacks
     elif data.startswith("view_user_"):
-        user_id = data.replace("view_user_", "")
-        await show_user_details(query, user_id)
-    
-    elif data.startswith("delete_user_"):
-        user_id = data.replace("delete_user_", "")
-        await delete_user(query, user_id)
-    
+        uid = data.replace("view_user_", "")
+        await show_user_details(query, uid)
     elif data.startswith("approve_user_"):
-        user_id = data.replace("approve_user_", "")
-        await approve_user(query, context, user_id)
-    
+        uid = data.replace("approve_user_", "")
+        await approve_user(query, context, uid)
     elif data.startswith("reject_user_"):
-        user_id = data.replace("reject_user_", "")
-        await reject_user(query, user_id)
-    
+        uid = data.replace("reject_user_", "")
+        await reject_user(query, uid)
     elif data.startswith("block_user_"):
-        user_id = data.replace("block_user_", "")
-        await block_user(query, user_id)
-    
+        uid = data.replace("block_user_", "")
+        await block_user(query, uid)
     elif data.startswith("unblock_user_"):
-        user_id = data.replace("unblock_user_", "")
-        await unblock_user(query, user_id)
-    
+        uid = data.replace("unblock_user_", "")
+        await unblock_user(query, uid)
+    elif data.startswith("delete_user_"):
+        uid = data.replace("delete_user_", "")
+        await delete_user(query, uid)
     elif data.startswith("toggle_site_"):
         site_name = data.replace("toggle_site_", "")
         await toggle_site(query, site_name)
-    
-    elif data.startswith("add_banned_"):
-        await add_banned_word(query)
-    
     elif data.startswith("remove_banned_"):
         word = data.replace("remove_banned_", "")
         await remove_banned_word(query, word)
+    elif data.startswith("user_next_"):
+        parts = data.split("_")
+        if len(parts) >= 4:
+            number = parts[2]
+            page = int(parts[3])
+            await show_number_otps_with_page(query, user_id, number, page)
+    elif data.startswith("user_prev_"):
+        parts = data.split("_")
+        if len(parts) >= 4:
+            number = parts[2]
+            page = int(parts[3])
+            await show_number_otps_with_page(query, user_id, number, page)
 
 async def show_user_list(query):
     users = approved_users.items()
@@ -401,7 +437,7 @@ async def show_user_list(query):
         num_count = len(data.get("numbers", []))
         keyboard.append([InlineKeyboardButton(f"👤 {name} ({num_count} nums)", callback_data=f"view_user_{uid}")])
     
-    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_back")])
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_close")])
     
     await query.edit_message_text(
         f"👥 *User List* ({len(users)} total)\n\nClick to view details:",
@@ -422,7 +458,7 @@ async def show_pending_list(query):
             InlineKeyboardButton(f"❌", callback_data=f"reject_user_{uid}")
         ])
     
-    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_back")])
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_close")])
     
     await query.edit_message_text(
         f"⏳ *Pending Requests* ({len(pending_users)})\n\nApprove or reject:",
@@ -440,7 +476,7 @@ async def show_blocked_list(query):
         name = data.get("name", "Unknown")[:20]
         keyboard.append([InlineKeyboardButton(f"🔓 Unblock {name}", callback_data=f"unblock_user_{uid}")])
     
-    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_back")])
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_close")])
     
     await query.edit_message_text(
         f"🚫 *Blocked Users* ({len(blocked_users)})\n\nClick to unblock:",
@@ -468,7 +504,7 @@ async def show_stats(query):
         f"🕐 *Updated:* {datetime.now().strftime('%H:%M:%S')}"
     )
     
-    keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="admin_back")]]
+    keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="admin_close")]]
     await query.edit_message_text(stats_msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def show_site_manager(query):
@@ -476,7 +512,7 @@ async def show_site_manager(query):
     for site in SITES:
         status = "✅" if site.get("enabled", True) else "❌"
         keyboard.append([InlineKeyboardButton(f"{status} {site['name']}", callback_data=f"toggle_site_{site['name']}")])
-    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_back")])
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_close")])
     
     await query.edit_message_text(
         "🌐 *Site Manager*\n\nToggle sites ON/OFF:",
@@ -488,8 +524,7 @@ async def show_banned_words(query):
     keyboard = []
     for word in banned_words:
         keyboard.append([InlineKeyboardButton(f"❌ {word}", callback_data=f"remove_banned_{word}")])
-    keyboard.append([InlineKeyboardButton("➕ Add Word", callback_data="add_banned_")])
-    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_back")])
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_close")])
     
     msg = "🔨 *Banned Words*\n\nMessages containing these words will be filtered:\n\n"
     if not banned_words:
@@ -498,14 +533,11 @@ async def show_banned_words(query):
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def show_broadcast_menu(query):
-    keyboard = [
-        [InlineKeyboardButton("📢 Send to All Users", callback_data="broadcast_all")],
-        [InlineKeyboardButton("🔙 Back", callback_data="admin_back")]
-    ]
+    keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="admin_close")]]
     
     await query.edit_message_text(
         "📢 *Broadcast*\n\nSend a message to all users.\n\n"
-        "Reply to this message with /send [message]",
+        "Use: /send [your message]",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
@@ -520,10 +552,7 @@ async def show_settings(query):
         f"🔹 Total users: {len(approved_users)}"
     )
     
-    keyboard = [
-        [InlineKeyboardButton("🔙 Back", callback_data="admin_back")]
-    ]
-    
+    keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="admin_close")]]
     await query.edit_message_text(settings_msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def show_user_details(query, target_id):
@@ -551,7 +580,7 @@ async def show_user_details(query, target_id):
     
     keyboard = [
         [InlineKeyboardButton("🚫 Block User", callback_data=f"block_user_{target_id}")],
-        [InlineKeyboardButton("📝 View OTPs", callback_data=f"view_user_otps_{target_id}")],
+        [InlineKeyboardButton("🗑 Delete User", callback_data=f"delete_user_{target_id}")],
         [InlineKeyboardButton("🔙 Back", callback_data="admin_users")]
     ]
     
@@ -622,7 +651,7 @@ async def toggle_site(query, site_name):
 async def add_banned_word(query):
     await query.edit_message_text(
         "➕ *Add Banned Word*\n\n"
-        "Reply to this message with /addword [word]\n\n"
+        "Reply with /addword [word]\n\n"
         "Example: /addword spam",
         parse_mode="Markdown"
     )
@@ -697,75 +726,6 @@ async def show_main_menu(update, user_id):
             await update.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
         except:
             pass
-
-async def user_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user_id = str(update.effective_user.id)
-    data = query.data
-    
-    await query.answer()
-    
-    # Check blocked
-    if user_id in blocked_users:
-        await query.message.reply_text("🚫 You are blocked!")
-        return
-    
-    # Check approval
-    if user_id not in approved_users:
-        await query.message.reply_text("❌ Not approved! Contact admin.")
-        return
-    
-    if data == "user_select_country":
-        await show_country_menu(query, user_id)
-    
-    elif data.startswith("user_country_"):
-        country = data.replace("user_country_", "")
-        await show_numbers_for_country(query, user_id, country)
-    
-    elif data.startswith("user_view_"):
-        number = data.replace("user_view_", "")
-        await show_number_otps(query, user_id, number)
-    
-    elif data.startswith("user_save_"):
-        number = data.replace("user_save_", "")
-        await save_user_number(query, user_id, number)
-    
-    elif data == "user_my_numbers":
-        await show_my_numbers(query, user_id)
-    
-    elif data == "user_my_otps":
-        await show_my_otps(query, user_id)
-    
-    elif data == "user_remove_number":
-        await show_remove_menu(query, user_id)
-    
-    elif data.startswith("user_remove_"):
-        idx = int(data.split("_")[2])
-        await remove_user_number(query, user_id, idx)
-    
-    elif data.startswith("user_refresh_country_"):
-        country = data.replace("user_refresh_country_", "")
-        await show_numbers_for_country(query, user_id, country)
-    
-    elif data.startswith("user_next_"):
-        parts = data.split("_")
-        if len(parts) >= 3:
-            number = parts[2]
-            page = int(parts[3]) if len(parts) > 3 else 0
-            await show_number_otps_with_page(query, user_id, number, page)
-    
-    elif data.startswith("user_prev_"):
-        parts = data.split("_")
-        if len(parts) >= 3:
-            number = parts[2]
-            page = int(parts[3]) if len(parts) > 3 else 0
-            await show_number_otps_with_page(query, user_id, number, page)
-    
-    elif data == "user_back_menu":
-        await show_main_menu(query, user_id)
-    
-    elif data == "user_help":
-        await show_user_help(query)
 
 async def show_country_menu(query, user_id):
     keyboard = []
@@ -1001,7 +961,7 @@ async def show_user_help(query):
         parse_mode="Markdown"
     )
 
-# ==================== MAIN ====================
+# ==================== MESSAGE HANDLER ====================
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle text messages"""
@@ -1029,6 +989,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             banned_words.append(word)
             save_data()
             await update.message.reply_text(f"✅ Added `{word}` to banned words!", parse_mode="Markdown")
+        return
+    
+    # If user is not approved, remind them
+    if user_id not in approved_users and user_id not in pending_users:
+        await update.message.reply_text("❌ Please use /start to request access.")
         return
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1091,14 +1056,12 @@ def main():
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("admin", admin_panel))
     app.add_handler(CommandHandler("status", status_command))
-    app.add_handler(CommandHandler("send", message_handler))
-    app.add_handler(CommandHandler("addword", message_handler))
+    
+    # Message handler for text messages
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     
-    # Callbacks - separate for admin and user
-    app.add_handler(CallbackQueryHandler(admin_button_handler, pattern="^admin_"))
-    app.add_handler(CallbackQueryHandler(user_button_handler, pattern="^user_"))
-    app.add_handler(CallbackQueryHandler(admin_button_handler, pattern="^(approve_user_|reject_user_|block_user_|unblock_user_|toggle_site_|add_banned_|remove_banned_|view_user_|delete_user_)"))
+    # Callback handler for all buttons
+    app.add_handler(CallbackQueryHandler(button_handler))
     
     print("✅ Bot running! Admin panel available via /admin")
     print("=" * 55)
