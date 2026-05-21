@@ -41,6 +41,7 @@ def load_data():
                 blocked_users = data.get("blocked_users", {})
                 all_numbers = data.get("all_numbers", [])
                 otp_storage = data.get("otp_storage", {})
+                print(f"📂 Loaded: {len(approved_users)} users, {len(all_numbers)} numbers, {len(otp_storage)} OTPs")
     except Exception as e:
         print(f"Load error: {e}")
 
@@ -66,6 +67,7 @@ def extract_otp(text):
         r'[Cc][Oo][Dd][Ee][:\s]*(\d{4,6})',
         r'verification code[:\s]*(\d{4,6})',
         r'(\d{6})',
+        r'(\d{5})',
     ]
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
@@ -122,6 +124,7 @@ def scrape_sites():
                             "source": url.split('/')[2]
                         }
                         new_otps.append(otp)
+                        print(f"🔐 New OTP: {otp} from {url.split('/')[2]}")
                         
         except Exception as e:
             print(f"Scrape error {url}: {e}")
@@ -130,7 +133,7 @@ def scrape_sites():
     save_data()
     return new_otps
 
-# ==================== ADMIN PANEL ====================
+# ==================== ADMIN COMMANDS ====================
 
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -149,7 +152,123 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("❌ Close", callback_data="admin_close")]
     ]
     
-    await update.message.reply_text("🔧 *ADMIN PANEL*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    await update.message.reply_text("🔧 *ADMIN PANEL*\n\nChoose an option:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Direct approve command: /approve user_id"""
+    user_id = str(update.effective_user.id)
+    if user_id != str(ADMIN_ID):
+        await update.message.reply_text("❌ Admin only!")
+        return
+    
+    try:
+        target_id = context.args[0]
+        if target_id in pending_users:
+            user_data = pending_users[target_id]
+            approved_users[target_id] = {
+                "name": user_data.get("name", "Unknown"),
+                "username": user_data.get("username", ""),
+                "approved_at": str(datetime.now()),
+                "numbers": [],
+                "otp_history": []
+            }
+            del pending_users[target_id]
+            save_data()
+            
+            await update.message.reply_text(f"✅ User `{target_id}` approved successfully!", parse_mode="Markdown")
+            await context.bot.send_message(
+                chat_id=int(target_id),
+                text="✅ *APPROVED!*\n\nYour request has been approved by admin.\nSend /start to begin using the bot.",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(f"❌ User `{target_id}` not found in pending list!", parse_mode="Markdown")
+    except IndexError:
+        await update.message.reply_text("❌ Usage: `/approve [user_id]`", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+async def reject_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Direct reject command: /reject user_id"""
+    user_id = str(update.effective_user.id)
+    if user_id != str(ADMIN_ID):
+        await update.message.reply_text("❌ Admin only!")
+        return
+    
+    try:
+        target_id = context.args[0]
+        if target_id in pending_users:
+            del pending_users[target_id]
+            save_data()
+            await update.message.reply_text(f"❌ User `{target_id}` rejected!", parse_mode="Markdown")
+        else:
+            await update.message.reply_text(f"❌ User `{target_id}` not found!", parse_mode="Markdown")
+    except IndexError:
+        await update.message.reply_text("❌ Usage: `/reject [user_id]`", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+async def block_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Direct block command: /block user_id"""
+    user_id = str(update.effective_user.id)
+    if user_id != str(ADMIN_ID):
+        await update.message.reply_text("❌ Admin only!")
+        return
+    
+    try:
+        target_id = context.args[0]
+        if target_id in approved_users:
+            user_data = approved_users[target_id]
+            blocked_users[target_id] = user_data
+            del approved_users[target_id]
+            save_data()
+            await update.message.reply_text(f"🚫 User `{target_id}` blocked!", parse_mode="Markdown")
+        else:
+            await update.message.reply_text(f"❌ User `{target_id}` not found!", parse_mode="Markdown")
+    except IndexError:
+        await update.message.reply_text("❌ Usage: `/block [user_id]`", parse_mode="Markdown")
+
+async def unblock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Direct unblock command: /unblock user_id"""
+    user_id = str(update.effective_user.id)
+    if user_id != str(ADMIN_ID):
+        await update.message.reply_text("❌ Admin only!")
+        return
+    
+    try:
+        target_id = context.args[0]
+        if target_id in blocked_users:
+            user_data = blocked_users[target_id]
+            approved_users[target_id] = user_data
+            del blocked_users[target_id]
+            save_data()
+            await update.message.reply_text(f"🔓 User `{target_id}` unblocked!", parse_mode="Markdown")
+        else:
+            await update.message.reply_text(f"❌ User `{target_id}` not found in blocked list!", parse_mode="Markdown")
+    except IndexError:
+        await update.message.reply_text("❌ Usage: `/unblock [user_id]`", parse_mode="Markdown")
+
+async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List all users: /users"""
+    user_id = str(update.effective_user.id)
+    if user_id != str(ADMIN_ID):
+        await update.message.reply_text("❌ Admin only!")
+        return
+    
+    if not approved_users:
+        await update.message.reply_text("📭 No users found.")
+        return
+    
+    msg = "👥 *ALL USERS*\n\n"
+    for uid, u in approved_users.items():
+        msg += f"• {u.get('name', 'Unknown')}\n  ID: `{uid}`\n  @{u.get('username', 'N/A')}\n  Numbers: {len(u.get('numbers', []))}\n\n"
+        if len(msg) > 3500:
+            msg += "..."
+            break
+    
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+# ==================== ADMIN PANEL BUTTONS ====================
 
 async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -161,46 +280,47 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("📭 No users found.")
             return
         msg = "👥 *USERS*\n\n"
-        for uid, u in approved_users.items():
+        for uid, u in list(approved_users.items())[:20]:
             msg += f"• {u.get('name', 'Unknown')}\n  ID: `{uid}`\n  @{u.get('username', 'N/A')}\n  Numbers: {len(u.get('numbers', []))}\n\n"
-        await query.edit_message_text(msg[:4000], parse_mode="Markdown")
+        await query.edit_message_text(msg, parse_mode="Markdown")
     
     elif data == "admin_pending":
         if not pending_users:
             await query.edit_message_text("📭 No pending requests.")
             return
-        msg = "⏳ *PENDING*\n\n"
+        msg = "⏳ *PENDING REQUESTS*\n\n"
         for uid, u in pending_users.items():
-            msg += f"• {u.get('name', 'Unknown')}\n  ID: `{uid}`\n  @{u.get('username', 'N/A')}\n\n"
-        await query.edit_message_text(msg[:4000], parse_mode="Markdown")
+            msg += f"• {u.get('name', 'Unknown')}\n  ID: `{uid}`\n  @{u.get('username', 'N/A')}\n  Time: {u.get('time', 'Unknown')[:16]}\n\n"
+        await query.edit_message_text(msg, parse_mode="Markdown")
     
     elif data == "admin_blocked":
         if not blocked_users:
             await query.edit_message_text("📭 No blocked users.")
             return
-        msg = "🚫 *BLOCKED*\n\n"
+        msg = "🚫 *BLOCKED USERS*\n\n"
         for uid, u in blocked_users.items():
             msg += f"• {u.get('name', 'Unknown')}\n  ID: `{uid}`\n\n"
-        await query.edit_message_text(msg[:4000], parse_mode="Markdown")
+        await query.edit_message_text(msg, parse_mode="Markdown")
     
     elif data == "admin_stats":
-        msg = f"📊 *STATS*\n\n"
-        msg += f"👥 Users: {len(approved_users)}\n"
-        msg += f"⏳ Pending: {len(pending_users)}\n"
-        msg += f"🚫 Blocked: {len(blocked_users)}\n"
-        msg += f"📱 Numbers: {len(all_numbers)}\n"
-        msg += f"🔐 OTPs: {len(otp_storage)}\n"
-        msg += f"🌐 Sites: 4\n"
+        msg = f"📊 *STATISTICS*\n\n"
+        msg += f"👥 Approved Users: {len(approved_users)}\n"
+        msg += f"⏳ Pending Users: {len(pending_users)}\n"
+        msg += f"🚫 Blocked Users: {len(blocked_users)}\n"
+        msg += f"📱 Available Numbers: {len(all_numbers)}\n"
+        msg += f"🔐 Total OTPs: {len(otp_storage)}\n"
+        msg += f"🌐 Active Sites: 4\n"
+        msg += f"🕐 Last Update: {datetime.now().strftime('%H:%M:%S')}"
         await query.edit_message_text(msg, parse_mode="Markdown")
     
     elif data == "admin_broadcast":
-        await query.edit_message_text("📢 *BROADCAST*\n\nSend: /msg [your message]")
+        await query.edit_message_text("📢 *BROADCAST*\n\nUse: `/msg [your message]`\n\nExample: `/msg Hello everyone!`", parse_mode="Markdown")
     
     elif data == "admin_numbers":
         if not all_numbers:
             await query.edit_message_text("📭 No numbers found.")
             return
-        msg = "📱 *NUMBERS*\n\n"
+        msg = "📱 *AVAILABLE NUMBERS*\n\n"
         for n in all_numbers[:20]:
             msg += f"• `{n}`\n"
         await query.edit_message_text(msg, parse_mode="Markdown")
@@ -209,13 +329,13 @@ async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not otp_storage:
             await query.edit_message_text("🔐 No OTPs found.")
             return
-        msg = "🔐 *OTPs*\n\n"
+        msg = "🔐 *RECENT OTPs*\n\n"
         for otp, info in list(otp_storage.items())[-15:]:
             msg += f"• `{otp}`\n  {info['time'][:16]}\n  {info['source']}\n\n"
         await query.edit_message_text(msg, parse_mode="Markdown")
     
     elif data == "admin_close":
-        await query.edit_message_text("🔒 Panel closed.")
+        await query.edit_message_text("🔒 Admin panel closed.")
 
 # ==================== USER COMMANDS ====================
 
@@ -225,7 +345,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username or ""
     
     if user_id in blocked_users:
-        await update.message.reply_text("🚫 You are blocked!")
+        await update.message.reply_text("🚫 You are blocked from using this bot.")
         return
     
     if user_id in approved_users:
@@ -233,38 +353,46 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if user_id in pending_users:
-        await update.message.reply_text("⏳ Request pending. Wait for admin approval.")
+        await update.message.reply_text("⏳ Your request is pending. Please wait for admin approval.")
         return
     
+    # Send to admin
     pending_users[user_id] = {"name": name, "username": username, "time": str(datetime.now())}
     save_data()
     
     await context.bot.send_message(
         chat_id=ADMIN_ID,
-        text=f"🔔 *NEW USER*\n👤 {name}\n🆔 `{user_id}`\n📛 @{username}",
+        text=f"🔔 *NEW USER*\n\n👤 {name}\n🆔 `{user_id}`\n📛 @{username}\n🕐 {datetime.now().strftime('%H:%M:%S')}\n\nUse: /approve {user_id}",
         parse_mode="Markdown"
     )
     
-    await update.message.reply_text("👋 Request sent to admin. You'll be notified when approved.")
+    await update.message.reply_text(
+        "👋 *Welcome!*\n\nYour request has been sent to admin.\nYou will be notified when approved.\n\nThank you for your patience! 🙏",
+        parse_mode="Markdown"
+    )
 
 async def main_menu(update, user_id):
     user_data = approved_users.get(user_id, {})
     num_count = len(user_data.get("numbers", []))
+    otp_count = len(user_data.get("otp_history", []))
     
     keyboard = [
         [InlineKeyboardButton("📱 Get Number", callback_data="get_number")],
         [InlineKeyboardButton("📋 My Numbers", callback_data="my_numbers")],
         [InlineKeyboardButton("🔐 My OTPs", callback_data="my_otps")],
-        [InlineKeyboardButton("❌ Remove Number", callback_data="remove_number")],
+        [InlineKeyboardButton("🗑 Remove Number", callback_data="remove_number")],
         [InlineKeyboardButton("ℹ️ Help", callback_data="help")]
     ]
     
-    msg = f"🤖 *OTP Bot*\n✅ Active\n📱 {num_count}/5 numbers\n\nChoose:"
+    msg = f"🤖 *OTP Bot*\n\n✅ Status: Active\n📱 Numbers: {num_count}/5\n🔐 Total OTPs: {otp_count}\n\n👇 Choose an option:"
     
     if isinstance(update, Update):
         await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
     else:
-        await update.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        try:
+            await update.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        except:
+            pass
 
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -277,19 +405,18 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if data == "get_number":
-        if not all_numbers:
-            await query.edit_message_text("📭 No numbers. Fetching...")
-            scrape_sites()
+        # Scrape fresh
+        scrape_sites()
         
         if not all_numbers:
-            await query.edit_message_text("📭 No numbers available. Try again.")
+            await query.edit_message_text("📭 No numbers available. Please try again in 30 seconds.")
             return
         
         user_nums = [n["number"] for n in approved_users[user_id].get("numbers", [])]
         available = [n for n in all_numbers if n not in user_nums][:10]
         
         if not available:
-            await query.edit_message_text("📭 You saved all numbers! Remove one first.")
+            await query.edit_message_text("📭 You have saved all available numbers! Remove one to add more.")
             return
         
         keyboard = []
@@ -297,7 +424,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard.append([InlineKeyboardButton(f"📱 {n}", callback_data=f"view_{n}")])
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="back_menu")])
         
-        await query.edit_message_text("📱 *Available Numbers*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        await query.edit_message_text("📱 *Available Numbers*\n\nClick a number to view its OTPs:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
     
     elif data.startswith("view_"):
         number = data.replace("view_", "")
@@ -309,29 +436,31 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_nums = user_data.get("numbers", [])
         
         if len(user_nums) >= 5:
-            await query.edit_message_text("❌ Max 5 numbers!")
+            await query.edit_message_text("❌ Limit reached! Maximum 5 numbers per user.")
             return
         
         if number not in [n["number"] for n in user_nums]:
             user_nums.append({"number": number, "saved_at": str(datetime.now())})
             user_data["numbers"] = user_nums
             save_data()
-            await query.edit_message_text(f"✅ Saved `{number}`", parse_mode="Markdown")
+            await query.edit_message_text(f"✅ Number `{number}` saved successfully!", parse_mode="Markdown")
+        else:
+            await query.edit_message_text(f"⚠️ Number `{number}` already saved!", parse_mode="Markdown")
     
     elif data == "my_numbers":
         user_data = approved_users.get(user_id, {})
         user_nums = user_data.get("numbers", [])
         
         if not user_nums:
-            await query.edit_message_text("📭 No saved numbers.")
+            await query.edit_message_text("📭 You haven't saved any numbers yet.\n\nUse 'Get Number' to add numbers.")
             return
         
-        msg = "📱 *Your Numbers*\n\n"
+        msg = "📱 *Your Saved Numbers*\n\n"
         for i, n in enumerate(user_nums, 1):
             otp_count = len([o for o in user_data.get("otp_history", []) if o["number"] == n["number"]])
-            msg += f"{i}. `{n['number']}`\n   Saved: {n['saved_at'][:16]}\n   OTPs: {otp_count}\n\n"
+            msg += f"{i}. `{n['number']}`\n   📅 Saved: {n['saved_at'][:16]}\n   🔐 OTPs: {otp_count}\n\n"
         
-        keyboard = [[InlineKeyboardButton("🔐 View OTPs", callback_data="my_otps")]]
+        keyboard = [[InlineKeyboardButton("🔐 View All OTPs", callback_data="my_otps")]]
         await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
     
     elif data == "my_otps":
@@ -339,10 +468,10 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         otps = user_data.get("otp_history", [])
         
         if not otps:
-            await query.edit_message_text("🔐 No OTPs yet.")
+            await query.edit_message_text("🔐 No OTPs received yet.\n\nSave a number and wait for OTPs to arrive.")
             return
         
-        msg = "🔐 *Your OTPs*\n\n"
+        msg = "🔐 *Your OTP History* (Last 15)\n\n"
         for o in otps[-15:]:
             msg += f"• `{o['otp']}`\n  📱 {o['number']}\n  🕐 {o['time'][:16]}\n  🌐 {o.get('source', 'Unknown')}\n\n"
         await query.edit_message_text(msg, parse_mode="Markdown")
@@ -360,7 +489,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard.append([InlineKeyboardButton(f"🗑 {n['number']}", callback_data=f"remove_{i}")])
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="back_menu")])
         
-        await query.edit_message_text("🗑 *Remove Number*", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text("🗑 *Remove Number*\n\nSelect which number to remove:", reply_markup=InlineKeyboardMarkup(keyboard))
     
     elif data.startswith("remove_"):
         idx = int(data.split("_")[1])
@@ -371,7 +500,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             removed = user_nums.pop(idx)
             user_data["numbers"] = user_nums
             save_data()
-            await query.edit_message_text(f"✅ Removed `{removed['number']}`", parse_mode="Markdown")
+            await query.edit_message_text(f"✅ Number `{removed['number']}` removed!", parse_mode="Markdown")
     
     elif data.startswith("next_"):
         parts = data.split("_")
@@ -392,22 +521,31 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif data == "help":
         await query.edit_message_text(
-            "📖 *HELP*\n\n"
-            "1. Get Number → Choose a number\n"
-            "2. View OTPs → See codes\n"
-            "3. Save Number → Add to your list\n"
-            "4. My Numbers → View saved\n"
-            "5. My OTPs → Your history\n\n"
-            "Max 5 numbers.\nNumbers are public.",
+            "📖 *HOW TO USE*\n\n"
+            "1️⃣ *Get Number* - View available numbers\n"
+            "2️⃣ *View OTPs* - Click a number to see its OTPs\n"
+            "3️⃣ *Save Number* - Add number to your list\n"
+            "4️⃣ *My Numbers* - View your saved numbers\n"
+            "5️⃣ *My OTPs* - See all OTPs you've received\n"
+            "6️⃣ *Remove Number* - Delete a saved number\n\n"
+            "⚠️ *Limits & Notes*\n"
+            "• Maximum 5 numbers per user\n"
+            "• Numbers are public (shared with others)\n"
+            "• For testing/educational use only\n"
+            "• New OTPs appear automatically every 15 seconds\n\n"
+            "🔧 *Commands*\n"
+            "/start - Main menu\n"
+            "/admin - Admin panel (admin only)",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_menu")]]),
             parse_mode="Markdown"
         )
 
 async def show_otps(query, user_id, number, page):
-    otps = [o for o in otp_storage.values() if o.get("message", "").find(number) != -1]
+    # Find OTPs for this number
+    otps = [o for o in otp_storage.values() if number in o.get("message", "")]
     
     if not otps:
-        await query.edit_message_text(f"📭 No OTPs for {number}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="get_number")]]))
+        await query.edit_message_text(f"📭 No OTPs found for `{number}`\n\nCheck back later.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="get_number")]]), parse_mode="Markdown")
         return
     
     per_page = 8
@@ -418,11 +556,15 @@ async def show_otps(query, user_id, number, page):
     
     msg = f"🔐 *OTPs for {number}*\n\n"
     for i, o in enumerate(page_otps, start + 1):
-        msg += f"{i}. `{o['otp']}`\n   🕐 {o['time'][:16]}\n   🌐 {o['source']}\n\n"
+        msg += f"{i}. `{o['otp']}`\n"
+        msg += f"   🕐 {o['time'][:16]}\n"
+        msg += f"   🌐 {o['source']}\n"
+        msg += f"   📨 {o['message'][:60]}...\n\n"
     
+    # Navigation buttons
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("◀️ Prev", callback_data=f"prev_{number}_{page-1}"))
+        nav.append(InlineKeyboardButton("◀️ Previous", callback_data=f"prev_{number}_{page-1}"))
     if end < total:
         nav.append(InlineKeyboardButton("Next ▶️", callback_data=f"next_{number}_{page+1}"))
     
@@ -430,15 +572,16 @@ async def show_otps(query, user_id, number, page):
     if nav:
         keyboard.append(nav)
     
+    # Save button
     user_nums = [n["number"] for n in approved_users.get(user_id, {}).get("numbers", [])]
     if number not in user_nums:
-        keyboard.append([InlineKeyboardButton("💾 Save Number", callback_data=f"save_{number}")])
+        keyboard.append([InlineKeyboardButton("💾 Save This Number", callback_data=f"save_{number}")])
     
-    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="get_number")])
+    keyboard.append([InlineKeyboardButton("🔙 Back to Numbers", callback_data="get_number")])
     
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
     
-    # Save to history
+    # Save OTPs to user history
     user_data = approved_users.get(user_id, {})
     for o in page_otps:
         if o["otp"] not in [h["otp"] for h in user_data.get("otp_history", [])]:
@@ -448,52 +591,67 @@ async def show_otps(query, user_id, number, page):
                 "otp": o["otp"],
                 "number": number,
                 "time": o["time"],
-                "source": o["source"]
+                "source": o["source"],
+                "message": o["message"][:100]
             })
     save_data()
 
-async def msg_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Broadcast message to all users: /msg message"""
     user_id = str(update.effective_user.id)
-    text = update.message.text
+    if user_id != str(ADMIN_ID):
+        await update.message.reply_text("❌ Admin only!")
+        return
     
-    if user_id == str(ADMIN_ID) and text.startswith("/msg "):
-        msg = text.replace("/msg ", "")
-        sent = 0
-        for uid in approved_users.keys():
-            try:
-                await context.bot.send_message(chat_id=int(uid), text=f"📢 {msg}")
-                sent += 1
-                await asyncio.sleep(0.1)
-            except:
-                pass
-        await update.message.reply_text(f"✅ Sent to {sent} users")
+    if not context.args:
+        await update.message.reply_text("❌ Usage: `/msg [your message]`\n\nExample: `/msg Hello everyone!`", parse_mode="Markdown")
+        return
     
-    elif user_id not in approved_users and user_id not in pending_users:
-        await update.message.reply_text("❌ Use /start to request access")
+    msg = " ".join(context.args)
+    sent = 0
+    failed = 0
+    
+    await update.message.reply_text(f"📢 Broadcasting...")
+    
+    for uid in approved_users.keys():
+        try:
+            await context.bot.send_message(chat_id=int(uid), text=f"📢 *ANNOUNCEMENT*\n\n{msg}", parse_mode="Markdown")
+            sent += 1
+            await asyncio.sleep(0.1)
+        except:
+            failed += 1
+    
+    await update.message.reply_text(f"✅ Broadcast complete!\n\n📤 Sent: {sent}\n❌ Failed: {failed}")
 
 async def scrape_loop():
+    """Background scraper"""
+    print("🔄 Auto-scrape started (every 15 seconds)")
     while True:
         try:
             new = scrape_sites()
             if new:
-                print(f"Found {len(new)} new OTPs")
+                print(f"✅ Found {len(new)} new OTPs at {datetime.now().strftime('%H:%M:%S')}")
         except Exception as e:
             print(f"Scrape error: {e}")
         await asyncio.sleep(15)
 
+# ==================== MAIN ====================
+
 def main():
-    print("=" * 50)
-    print("🤖 OTP BOT STARTING...")
-    print("=" * 50)
+    print("=" * 55)
+    print("🤖 OTP FORWARDER BOT v5.0")
+    print("=" * 55)
     
     load_data()
     
-    print(f"✅ Users: {len(approved_users)}")
-    print(f"📱 Numbers: {len(all_numbers)}")
-    print(f"🔐 OTPs: {len(otp_storage)}")
-    print("=" * 50)
+    print(f"✅ Approved Users: {len(approved_users)}")
+    print(f"⏳ Pending Users: {len(pending_users)}")
+    print(f"🚫 Blocked Users: {len(blocked_users)}")
+    print(f"📱 Available Numbers: {len(all_numbers)}")
+    print(f"🔐 Stored OTPs: {len(otp_storage)}")
+    print("=" * 55)
     
-    # Start scraper
+    # Start background scraper
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.create_task(scrape_loop())
@@ -501,14 +659,25 @@ def main():
     # Start bot
     app = Application.builder().token(BOT_TOKEN).build()
     
-    app.add_handler(CommandHandler("start", start))
+    # Admin commands
     app.add_handler(CommandHandler("admin", admin_cmd))
+    app.add_handler(CommandHandler("approve", approve_command))
+    app.add_handler(CommandHandler("reject", reject_command))
+    app.add_handler(CommandHandler("block", block_command))
+    app.add_handler(CommandHandler("unblock", unblock_command))
+    app.add_handler(CommandHandler("users", users_command))
+    app.add_handler(CommandHandler("msg", broadcast_command))
+    
+    # User commands
+    app.add_handler(CommandHandler("start", start))
+    
+    # Handlers
     app.add_handler(CallbackQueryHandler(admin_buttons, pattern="^admin_"))
     app.add_handler(CallbackQueryHandler(buttons))
-    app.add_handler(CommandHandler("msg", msg_handler))
     
-    print("✅ Bot running! /start to begin")
-    print("=" * 50)
+    print("✅ Bot is running!")
+    print("📱 Commands: /start, /admin, /approve, /reject, /block, /unblock, /users, /msg")
+    print("=" * 55)
     
     app.run_polling()
 
