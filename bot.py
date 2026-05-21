@@ -15,7 +15,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 
 # ==================== LOGGING ====================
 logging.basicConfig(
-    format='%(asctime)s - %name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
@@ -30,44 +30,49 @@ DATA_FILE = "bot_data.json"
 # Data structures
 pending_users = {}
 approved_users = {}
-all_numbers = {}  # {country_code: [numbers]}
-otp_storage = {}  # {number: [{"otp": "...", "message": "...", ...}]}
+blocked_users = {}
+all_numbers = {}
+otp_storage = {}
 user_last_otp_index = {}
 user_sessions = {}
-user_message_ids = {}  # ট্র্যাক রাখার জন্য মেসেজ আইডি
+banned_words = []
+allowed_sites = []
 
-# কান্ট্রি কোড লিস্ট
+# কান্ট্রি লিস্ট
 COUNTRIES = {
-    "US": {"flag": "🇺🇸", "name": "United States", "code": "+1", "priority": 1},
-    "UK": {"flag": "🇬🇧", "name": "United Kingdom", "code": "+44", "priority": 2},
-    "CA": {"flag": "🇨🇦", "name": "Canada", "code": "+1", "priority": 3},
-    "AU": {"flag": "🇦🇺", "name": "Australia", "code": "+61", "priority": 4},
-    "DE": {"flag": "🇩🇪", "name": "Germany", "code": "+49", "priority": 5},
-    "FR": {"flag": "🇫🇷", "name": "France", "code": "+33", "priority": 6},
-    "IN": {"flag": "🇮🇳", "name": "India", "code": "+91", "priority": 7}
+    "US": {"flag": "🇺🇸", "name": "United States", "code": "+1"},
+    "UK": {"flag": "🇬🇧", "name": "United Kingdom", "code": "+44"},
+    "CA": {"flag": "🇨🇦", "name": "Canada", "code": "+1"},
+    "AU": {"flag": "🇦🇺", "name": "Australia", "code": "+61"},
+    "DE": {"flag": "🇩🇪", "name": "Germany", "code": "+49"},
+    "FR": {"flag": "🇫🇷", "name": "France", "code": "+33"},
+    "IN": {"flag": "🇮🇳", "name": "India", "code": "+91"}
 }
 
-# সাইট লিস্ট (কান্ট্রি অনুযায়ী নম্বর প্রদান করে)
+# সাইট লিস্ট
 SITES = [
-    {"name": "getsms", "url": "https://getsms.cc", "countries": ["US", "UK", "CA", "AU", "DE", "FR"]},
-    {"name": "esimplus", "url": "https://esimplus.me/temporary-numbers", "countries": ["US", "UK", "CA"]},
-    {"name": "receive-sms", "url": "https://receive-sms-online.info/", "countries": ["US", "UK", "CA"]},
-    {"name": "temp-number", "url": "https://temp-number.org/", "countries": ["US", "UK"]},
-    {"name": "sms-receive", "url": "https://sms-receive.net/", "countries": ["US", "UK", "CA"]}
+    {"name": "getsms", "url": "https://getsms.cc", "countries": ["US", "UK", "CA", "AU", "DE", "FR"], "enabled": True},
+    {"name": "esimplus", "url": "https://esimplus.me/temporary-numbers", "countries": ["US", "UK", "CA"], "enabled": True},
+    {"name": "receive-sms", "url": "https://receive-sms-online.info/", "countries": ["US", "UK", "CA"], "enabled": True},
+    {"name": "temp-number", "url": "https://temp-number.org/", "countries": ["US", "UK"], "enabled": True},
+    {"name": "sms-receive", "url": "https://sms-receive.net/", "countries": ["US", "UK", "CA"], "enabled": True}
 ]
 
 def load_data():
-    global pending_users, approved_users, all_numbers, otp_storage, user_last_otp_index
+    global pending_users, approved_users, blocked_users, all_numbers, otp_storage, user_last_otp_index, banned_words, allowed_sites
     try:
         if os.path.exists(DATA_FILE):
             with open(DATA_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 pending_users = data.get("pending_users", {})
                 approved_users = data.get("approved_users", {})
+                blocked_users = data.get("blocked_users", {})
                 all_numbers = data.get("all_numbers", {})
                 otp_storage = data.get("otp_storage", {})
                 user_last_otp_index = data.get("user_last_otp_index", {})
-                logger.info(f"Loaded: {len(approved_users)} users")
+                banned_words = data.get("banned_words", [])
+                allowed_sites = data.get("allowed_sites", [s["name"] for s in SITES])
+                logger.info(f"Loaded: {len(approved_users)} users, {len(blocked_users)} blocked")
     except Exception as e:
         logger.error(f"Load error: {e}")
 
@@ -77,54 +82,70 @@ def save_data():
             json.dump({
                 "pending_users": pending_users,
                 "approved_users": approved_users,
+                "blocked_users": blocked_users,
                 "all_numbers": all_numbers,
                 "otp_storage": otp_storage,
                 "user_last_otp_index": user_last_otp_index,
+                "banned_words": banned_words,
+                "allowed_sites": allowed_sites,
                 "last_update": str(datetime.now())
             }, f, indent=2, ensure_ascii=False)
     except Exception as e:
         logger.error(f"Save error: {e}")
 
-def extract_phone_numbers(text, country_code="US"):
-    """Extract phone numbers from text - improved"""
-    # Remove common words and clean text
+def extract_phone_numbers(text):
+    """Extract phone numbers from text"""
+    if not text:
+        return []
+    
+    # Clean text
     text = re.sub(r'[^\d\+]', ' ', text)
     
-    # US/Canada pattern (+1 or 1 followed by 10 digits)
+    # US/Canada pattern
     us_pattern = r'\+?1?\s*\(?(\d{3})\)?[\s-]?(\d{3})[\s-]?(\d{4})'
     us_matches = re.findall(us_pattern, text)
     
     # International pattern
-    intl_pattern = r'\+?(\d{1,3})[\s-]?(\d{3,4})[\s-]?(\d{3,4})[\s-]?(\d{3,4})'
+    intl_pattern = r'\+?(\d{1,3})[\s-]?(\d{2,4})[\s-]?(\d{3,4})[\s-]?(\d{3,4})'
     intl_matches = re.findall(intl_pattern, text)
     
     numbers = []
     for match in us_matches:
         num = f"+1{''.join(match)}"
-        numbers.append(num)
+        if len(num) >= 10:
+            numbers.append(num)
     
     for match in intl_matches:
-        if len(''.join(match)) >= 8:
-            num = f"+{''.join(match)}"
+        num = f"+{''.join(match)}"
+        if len(num) >= 8:
             numbers.append(num)
+    
+    # Simple 10-digit numbers
+    simple = re.findall(r'\b\d{10,11}\b', text)
+    for num in simple:
+        if num not in numbers:
+            numbers.append(f"+{num}")
     
     return list(set(numbers))[:10]
 
 def detect_service(message):
-    """Detect which service sent the OTP"""
+    """Detect service from message"""
     services = {
-        "META": ["facebook", "fb", "meta", "instagram", "ig"],
-        "SHOPIFY": ["shopify", "store", "payment", "checkout"],
-        "CARD": ["visa", "mastercard", "card", "bank", "credit"],
+        "FACEBOOK": ["facebook", "fb", "meta", "face"],
+        "INSTAGRAM": ["instagram", "ig", "insta"],
         "GOOGLE": ["google", "gmail", "youtube"],
-        "AMAZON": ["amazon", "aws", "prime"],
-        "APPLE": ["apple", "icloud", "ios"],
         "WHATSAPP": ["whatsapp", "wa"],
         "TELEGRAM": ["telegram", "tg"],
-        "TWITTER": ["twitter", "x.com"],
-        "TIKTOK": ["tiktok", "tt"],
+        "AMAZON": ["amazon", "aws", "prime"],
+        "APPLE": ["apple", "icloud", "ios"],
         "MICROSOFT": ["microsoft", "outlook", "teams"],
-        "DISCORD": ["discord", "dc"]
+        "TWITTER": ["twitter", "x.com", "x"],
+        "TIKTOK": ["tiktok", "tt"],
+        "DISCORD": ["discord", "dc"],
+        "SHOPIFY": ["shopify", "store", "shop"],
+        "PAYPAL": ["paypal", "pay"],
+        "BANK": ["bank", "visa", "mastercard", "card", "credit"],
+        "VERIFICATION": ["verification", "verify", "code", "otp", "pin"]
     }
     
     msg_lower = message.lower()
@@ -143,10 +164,10 @@ def extract_otp(text):
         r'\b(\d{5,6})\b',
         r'[Oo][Tt][Pp][:\s]*(\d{4,6})',
         r'[Cc][Oo][Dd][Ee][:\s]*(\d{4,6})',
-        r'[Pp][Ii][Nn][:\s]*(\d{4,6})',
         r'verification code[:\s]*(\d{4,6})',
         r'(\d{4,6}) is your',
-        r'(\d{4,6})$',
+        r'(\d{6})',
+        r'(\d{5})',
     ]
     
     for pattern in patterns:
@@ -159,6 +180,9 @@ def extract_otp(text):
 
 def scrape_site(site):
     """Scrape a single site"""
+    if not site.get("enabled", True):
+        return [], []
+    
     numbers = []
     otps = []
     
@@ -174,22 +198,21 @@ def scrape_site(site):
         phones = extract_phone_numbers(page_text)
         numbers = phones[:8]
         
-        # If no numbers found, try to find from number elements
-        if not numbers:
-            number_elements = soup.find_all(['div', 'span', 'a', 'p'], string=re.compile(r'[\d\+\-\(\)]{10,}'))
-            for elem in number_elements[:10]:
-                txt = elem.get_text(strip=True)
-                phone = re.sub(r'[^\d\+]', '', txt)
-                if len(phone) >= 8:
-                    numbers.append(phone)
-        
-        numbers = list(set(numbers))[:8]
-        
         # Extract OTPs
         lines = page_text.split('\n')
         seen_otps = set()
         
         for line in lines:
+            # Check for banned words
+            if banned_words:
+                skip = False
+                for bw in banned_words:
+                    if bw.lower() in line.lower():
+                        skip = True
+                        break
+                if skip:
+                    continue
+            
             otp = extract_otp(line)
             if otp and otp not in seen_otps:
                 seen_otps.add(otp)
@@ -213,28 +236,28 @@ def scrape_site(site):
                         "source": site["name"],
                         "service": service
                     })
-                    print(f"🔐 [{site['name']}] OTP: {otp} ({service})")
         
-        return numbers, otps
+        return numbers[:8], otps
         
     except Exception as e:
         logger.error(f"Scrape error {site['name']}: {e}")
         return [], []
 
 def scrape_all_sites():
-    """Scrape all sites and organize by country"""
+    """Scrape all sites"""
     global all_numbers, otp_storage
     
-    logger.info("🔄 Starting scrape cycle...")
-    all_new_otps = []
-    
-    # Reset numbers for each country
+    logger.info("🔄 Scraping...")
     temp_numbers = {country: [] for country in COUNTRIES.keys()}
+    new_otps = []
     
     for site in SITES:
+        if not site.get("enabled", True):
+            continue
+            
         numbers, otps = scrape_site(site)
         
-        # Assign numbers to countries (based on area code)
+        # Assign numbers to countries
         for num in numbers:
             assigned = False
             for country, info in COUNTRIES.items():
@@ -244,86 +267,397 @@ def scrape_all_sites():
                         temp_numbers[country].append(num)
                     assigned = True
                     break
-            # Default to US if no match
             if not assigned and "US" in temp_numbers:
                 if num not in temp_numbers["US"]:
                     temp_numbers["US"].append(num)
         
         # Process OTPs
         for otp_info in otps:
-            # Find which country this number belongs to
-            for country, info in COUNTRIES.items():
-                country_code = info["code"]
-                if any(num.startswith(country_code) or num.startswith(country_code.replace('+', '')) for num in numbers):
-                    pass
-            
-            # Store OTP
             number = otp_info.get("associated_number") or (numbers[0] if numbers else "unknown")
             if number not in otp_storage:
                 otp_storage[number] = []
             
             if otp_info["otp"] not in [o["otp"] for o in otp_storage[number]]:
                 otp_storage[number].append(otp_info)
-                all_new_otps.append(otp_info)
+                new_otps.append(otp_info)
     
     # Update global numbers
     for country in temp_numbers:
         temp_numbers[country] = list(set(temp_numbers[country]))[:15]
     all_numbers = temp_numbers
     
-    # Limit OTP storage
+    # Clean old OTPs (keep last 100 per number)
     for num in otp_storage:
-        otp_storage[num] = otp_storage[num][-50:]
+        otp_storage[num] = otp_storage[num][-100:]
     
     save_data()
     
     total_numbers = sum(len(n) for n in all_numbers.values())
-    logger.info(f"✅ Scrape done: {total_numbers} numbers, {len(all_new_otps)} new OTPs")
-    return all_new_otps
+    logger.info(f"✅ Scraped: {total_numbers} numbers, {len(new_otps)} new OTPs")
+    return new_otps
 
-# ==================== TELEGRAM BOT ====================
+# ==================== ADMIN PANEL ====================
 
-async def send_or_edit_message(query, user_id, message_text, reply_markup, is_new=False):
-    """Send new message or edit existing one - avoids 'Message not modified' error"""
-    try:
-        # Check if we have a message id for this user
-        if not is_new and user_id in user_message_ids:
-            try:
-                await query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode="Markdown")
-                return
-            except Exception as e:
-                if "Message is not modified" in str(e):
-                    # Message same as before, just ignore
-                    return
-                else:
-                    # Other error, send new message
-                    pass
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin panel command"""
+    user_id = str(update.effective_user.id)
+    if user_id != str(ADMIN_ID):
+        await update.message.reply_text("❌ Admin only!")
+        return
+    
+    keyboard = [
+        [InlineKeyboardButton("👥 User List", callback_data="admin_users")],
+        [InlineKeyboardButton("⏳ Pending Requests", callback_data="admin_pending")],
+        [InlineKeyboardButton("🚫 Blocked Users", callback_data="admin_blocked")],
+        [InlineKeyboardButton("📊 Statistics", callback_data="admin_stats")],
+        [InlineKeyboardButton("🌐 Site Manager", callback_data="admin_sites")],
+        [InlineKeyboardButton("🔨 Banned Words", callback_data="admin_banned")],
+        [InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")],
+        [InlineKeyboardButton("⚙️ Settings", callback_data="admin_settings")],
+        [InlineKeyboardButton("❌ Close", callback_data="admin_close")]
+    ]
+    
+    await update.message.reply_text(
+        "🔧 *ADMIN PANEL*\n\nChoose an option:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
+async def admin_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
+    """Handle admin panel buttons"""
+    query = update.callback_query
+    
+    if data == "admin_users":
+        await show_user_list(query)
+    
+    elif data == "admin_pending":
+        await show_pending_list(query)
+    
+    elif data == "admin_blocked":
+        await show_blocked_list(query)
+    
+    elif data == "admin_stats":
+        await show_stats(query)
+    
+    elif data == "admin_sites":
+        await show_site_manager(query)
+    
+    elif data == "admin_banned":
+        await show_banned_words(query)
+    
+    elif data == "admin_broadcast":
+        await show_broadcast_menu(query)
+    
+    elif data == "admin_settings":
+        await show_settings(query)
+    
+    elif data == "admin_close":
+        await query.edit_message_text("🔒 Admin panel closed.")
+    
+    elif data.startswith("view_user_"):
+        user_id = data.replace("view_user_", "")
+        await show_user_details(query, user_id)
+    
+    elif data.startswith("delete_user_"):
+        user_id = data.replace("delete_user_", "")
+        await delete_user(query, user_id)
+    
+    elif data.startswith("approve_user_"):
+        user_id = data.replace("approve_user_", "")
+        await approve_user(query, context, user_id)
+    
+    elif data.startswith("reject_user_"):
+        user_id = data.replace("reject_user_", "")
+        await reject_user(query, user_id)
+    
+    elif data.startswith("block_user_"):
+        user_id = data.replace("block_user_", "")
+        await block_user(query, user_id)
+    
+    elif data.startswith("unblock_user_"):
+        user_id = data.replace("unblock_user_", "")
+        await unblock_user(query, user_id)
+    
+    elif data.startswith("toggle_site_"):
+        site_name = data.replace("toggle_site_", "")
+        await toggle_site(query, site_name)
+    
+    elif data.startswith("add_banned_"):
+        await add_banned_word(query)
+    
+    elif data.startswith("remove_banned_"):
+        word = data.replace("remove_banned_", "")
+        await remove_banned_word(query, word)
+
+async def show_user_list(query):
+    users = approved_users.items()
+    if not users:
+        await query.edit_message_text("📭 No users found.")
+        return
+    
+    keyboard = []
+    for uid, data in users:
+        name = data.get("name", "Unknown")[:20]
+        num_count = len(data.get("numbers", []))
+        keyboard.append([InlineKeyboardButton(f"👤 {name} ({num_count} nums)", callback_data=f"view_user_{uid}")])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_back")])
+    
+    await query.edit_message_text(
+        f"👥 *User List* ({len(users)} total)\n\nClick to view details:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
+async def show_pending_list(query):
+    if not pending_users:
+        await query.edit_message_text("📭 No pending requests.")
+        return
+    
+    keyboard = []
+    for uid, data in pending_users.items():
+        name = data.get("name", "Unknown")[:20]
+        keyboard.append([
+            InlineKeyboardButton(f"✅ {name}", callback_data=f"approve_user_{uid}"),
+            InlineKeyboardButton(f"❌", callback_data=f"reject_user_{uid}")
+        ])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_back")])
+    
+    await query.edit_message_text(
+        f"⏳ *Pending Requests* ({len(pending_users)})\n\nApprove or reject:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
+async def show_blocked_list(query):
+    if not blocked_users:
+        await query.edit_message_text("📭 No blocked users.")
+        return
+    
+    keyboard = []
+    for uid, data in blocked_users.items():
+        name = data.get("name", "Unknown")[:20]
+        keyboard.append([InlineKeyboardButton(f"🔓 Unblock {name}", callback_data=f"unblock_user_{uid}")])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_back")])
+    
+    await query.edit_message_text(
+        f"🚫 *Blocked Users* ({len(blocked_users)})\n\nClick to unblock:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
+async def show_stats(query):
+    total_users = len(approved_users)
+    total_blocks = len(blocked_users)
+    total_numbers = sum(len(u.get("numbers", [])) for u in approved_users.values())
+    total_otps = sum(len(u.get("otp_history", [])) for u in approved_users.values())
+    available_numbers = sum(len(n) for n in all_numbers.values())
+    total_otp_storage = sum(len(otps) for otps in otp_storage.values())
+    
+    stats_msg = (
+        f"📊 *STATISTICS*\n\n"
+        f"👥 *Users:* {total_users}\n"
+        f"🚫 *Blocked:* {total_blocks}\n"
+        f"📱 *Saved Numbers:* {total_numbers}\n"
+        f"🔐 *User OTPs:* {total_otps}\n"
+        f"📡 *Available Numbers:* {available_numbers}\n"
+        f"💾 *Storage OTPs:* {total_otp_storage}\n"
+        f"🌐 *Active Sites:* {len([s for s in SITES if s.get('enabled', True)])}\n"
+        f"🕐 *Updated:* {datetime.now().strftime('%H:%M:%S')}"
+    )
+    
+    keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="admin_back")]]
+    await query.edit_message_text(stats_msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+async def show_site_manager(query):
+    keyboard = []
+    for site in SITES:
+        status = "✅" if site.get("enabled", True) else "❌"
+        keyboard.append([InlineKeyboardButton(f"{status} {site['name']}", callback_data=f"toggle_site_{site['name']}")])
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_back")])
+    
+    await query.edit_message_text(
+        "🌐 *Site Manager*\n\nToggle sites ON/OFF:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
+async def show_banned_words(query):
+    keyboard = []
+    for word in banned_words:
+        keyboard.append([InlineKeyboardButton(f"❌ {word}", callback_data=f"remove_banned_{word}")])
+    keyboard.append([InlineKeyboardButton("➕ Add Word", callback_data="add_banned_")])
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="admin_back")])
+    
+    msg = "🔨 *Banned Words*\n\nMessages containing these words will be filtered:\n\n"
+    if not banned_words:
+        msg += "No banned words yet."
+    
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+async def show_broadcast_menu(query):
+    keyboard = [
+        [InlineKeyboardButton("📢 Send to All Users", callback_data="broadcast_all")],
+        [InlineKeyboardButton("🔙 Back", callback_data="admin_back")]
+    ]
+    
+    await query.edit_message_text(
+        "📢 *Broadcast*\n\nSend a message to all users.\n\n"
+        "Reply to this message with /send [message]",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
+async def show_settings(query):
+    settings_msg = (
+        "⚙️ *SETTINGS*\n\n"
+        f"🔹 Max numbers per user: 5\n"
+        f"🔹 Scrape interval: 15 seconds\n"
+        f"🔹 Sites active: {len([s for s in SITES if s.get('enabled', True)])}/{len(SITES)}\n"
+        f"🔹 Banned words: {len(banned_words)}\n"
+        f"🔹 Total users: {len(approved_users)}"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("🔙 Back", callback_data="admin_back")]
+    ]
+    
+    await query.edit_message_text(settings_msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+async def show_user_details(query, target_id):
+    user = approved_users.get(target_id)
+    if not user:
+        await query.edit_message_text("User not found!")
+        return
+    
+    numbers = user.get("numbers", [])
+    otps = user.get("otp_history", [])
+    
+    msg = (
+        f"👤 *USER DETAILS*\n\n"
+        f"🆔 ID: `{target_id}`\n"
+        f"📛 Name: {user.get('name', 'Unknown')}\n"
+        f"👤 Username: @{user.get('username', 'N/A')}\n"
+        f"🕐 Joined: {user.get('approved_at', 'Unknown')[:16]}\n"
+        f"📱 Numbers: {len(numbers)}/5\n"
+        f"🔐 OTPs: {len(otps)}\n\n"
+        f"*Saved Numbers:*\n"
+    )
+    
+    for num in numbers:
+        msg += f"• `{num['number']}`\n"
+    
+    keyboard = [
+        [InlineKeyboardButton("🚫 Block User", callback_data=f"block_user_{target_id}")],
+        [InlineKeyboardButton("📝 View OTPs", callback_data=f"view_user_otps_{target_id}")],
+        [InlineKeyboardButton("🔙 Back", callback_data="admin_users")]
+    ]
+    
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+async def delete_user(query, target_id):
+    if target_id in approved_users:
+        del approved_users[target_id]
+        save_data()
+        await query.edit_message_text(f"✅ User `{target_id}` deleted!", parse_mode="Markdown")
+    else:
+        await query.edit_message_text("User not found!")
+
+async def approve_user(query, context, target_id):
+    if target_id in pending_users:
+        user_data = pending_users[target_id]
+        approved_users[target_id] = {
+            "name": user_data.get("name", "Unknown"),
+            "username": user_data.get("username", ""),
+            "approved_at": str(datetime.now()),
+            "numbers": [],
+            "otp_history": []
+        }
+        del pending_users[target_id]
+        save_data()
         
-        # Send new message
-        msg = await query.message.reply_text(message_text, reply_markup=reply_markup, parse_mode="Markdown")
-        user_message_ids[user_id] = msg.message_id
-        
-    except Exception as e:
-        if "Message is not modified" not in str(e):
-            logger.error(f"Send error: {e}")
+        await query.edit_message_text(f"✅ User `{target_id}` approved!")
+        await context.bot.send_message(
+            chat_id=int(target_id),
+            text="✅ *APPROVED!*\n\nSend /start to begin using the bot.",
+            parse_mode="Markdown"
+        )
+    else:
+        await query.edit_message_text("User not found!")
+
+async def reject_user(query, target_id):
+    if target_id in pending_users:
+        del pending_users[target_id]
+        save_data()
+        await query.edit_message_text(f"❌ User `{target_id}` rejected!", parse_mode="Markdown")
+
+async def block_user(query, target_id):
+    if target_id in approved_users:
+        user_data = approved_users[target_id]
+        blocked_users[target_id] = user_data
+        del approved_users[target_id]
+        save_data()
+        await query.edit_message_text(f"🚫 User `{target_id}` blocked!", parse_mode="Markdown")
+
+async def unblock_user(query, target_id):
+    if target_id in blocked_users:
+        user_data = blocked_users[target_id]
+        approved_users[target_id] = user_data
+        del blocked_users[target_id]
+        save_data()
+        await query.edit_message_text(f"🔓 User `{target_id}` unblocked!", parse_mode="Markdown")
+
+async def toggle_site(query, site_name):
+    for site in SITES:
+        if site["name"] == site_name:
+            site["enabled"] = not site.get("enabled", True)
+            save_data()
+            status = "enabled" if site["enabled"] else "disabled"
+            await query.edit_message_text(f"✅ Site `{site_name}` {status}!")
+            await show_site_manager(query)
+            return
+
+async def add_banned_word(query):
+    await query.edit_message_text(
+        "➕ *Add Banned Word*\n\n"
+        "Reply to this message with /addword [word]\n\n"
+        "Example: /addword spam",
+        parse_mode="Markdown"
+    )
+
+async def remove_banned_word(query, word):
+    if word in banned_words:
+        banned_words.remove(word)
+        save_data()
+        await query.edit_message_text(f"✅ Removed `{word}` from banned words!", parse_mode="Markdown")
+        await show_banned_words(query)
+
+# ==================== USER BOT COMMANDS ====================
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     user_name = update.effective_user.first_name or "User"
     username = update.effective_user.username or ""
     
+    # Check if blocked
+    if user_id in blocked_users:
+        await update.message.reply_text("🚫 You are blocked from using this bot.")
+        return
+    
     if user_id in approved_users:
         await show_main_menu(update, user_id)
         return
     
     if user_id in pending_users:
-        await update.message.reply_text("⏳ *Request pending!*\n\nPlease wait for admin approval.", parse_mode="Markdown")
+        await update.message.reply_text("⏳ *Request pending!*\n\nWait for admin approval.", parse_mode="Markdown")
         return
     
-    # Send to admin
+    # Send request to admin
     keyboard = [[
-        InlineKeyboardButton("✅ Approve", callback_data=f"approve_{user_id}"),
-        InlineKeyboardButton("❌ Reject", callback_data=f"reject_{user_id}")
+        InlineKeyboardButton("✅ Approve", callback_data=f"approve_user_{user_id}"),
+        InlineKeyboardButton("❌ Reject", callback_data=f"reject_user_{user_id}")
     ]]
     
     await context.bot.send_message(
@@ -337,7 +671,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_data()
     
     await update.message.reply_text(
-        "👋 *Welcome!*\n\nRequest sent to admin. You'll be notified when approved.",
+        "👋 *Welcome!*\n\nRequest sent to admin.\nYou'll be notified when approved.",
         parse_mode="Markdown"
     )
 
@@ -347,11 +681,11 @@ async def show_main_menu(update, user_id):
     otp_count = len(user_data.get("otp_history", []))
     
     keyboard = [
-        [InlineKeyboardButton("🌍 Select Country", callback_data="select_country")],
-        [InlineKeyboardButton("📋 My Numbers", callback_data="my_numbers")],
-        [InlineKeyboardButton("🔐 My OTPs", callback_data="my_otps")],
-        [InlineKeyboardButton("🗑 Remove Number", callback_data="remove_number")],
-        [InlineKeyboardButton("ℹ️ Help", callback_data="help")]
+        [InlineKeyboardButton("🌍 Select Country", callback_data="user_select_country")],
+        [InlineKeyboardButton("📋 My Numbers", callback_data="user_my_numbers")],
+        [InlineKeyboardButton("🔐 My OTPs", callback_data="user_my_otps")],
+        [InlineKeyboardButton("🗑 Remove Number", callback_data="user_remove_number")],
+        [InlineKeyboardButton("ℹ️ Help", callback_data="user_help")]
     ]
     
     msg = f"🤖 *OTP Bot*\n\n✅ Active\n📱 {num_count}/5 numbers\n🔐 {otp_count} OTPs\n\n👇 Choose:"
@@ -359,141 +693,140 @@ async def show_main_menu(update, user_id):
     if isinstance(update, Update):
         await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
     else:
-        await send_or_edit_message(update, user_id, msg, InlineKeyboardMarkup(keyboard))
+        try:
+            await update.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        except:
+            pass
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def user_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = str(update.effective_user.id)
     data = query.data
     
     await query.answer()
     
-    # Admin actions
-    if data.startswith("approve_"):
-        target = data.replace("approve_", "")
-        if target in pending_users:
-            approved_users[target] = {
-                "name": pending_users[target]["name"],
-                "username": pending_users[target].get("username", ""),
-                "approved_at": str(datetime.now()),
-                "numbers": [],
-                "otp_history": []
-            }
-            del pending_users[target]
-            save_data()
-            await query.edit_message_text(f"✅ User {target} approved!")
-            await context.bot.send_message(chat_id=int(target), text="✅ *APPROVED!*\n\nSend /start", parse_mode="Markdown")
-        return
-    
-    if data.startswith("reject_"):
-        target = data.replace("reject_", "")
-        if target in pending_users:
-            del pending_users[target]
-            save_data()
-            await query.edit_message_text(f"❌ User {target} rejected!")
+    # Check blocked
+    if user_id in blocked_users:
+        await query.message.reply_text("🚫 You are blocked!")
         return
     
     # Check approval
     if user_id not in approved_users:
-        await query.message.reply_text("❌ Access denied! Contact admin.")
+        await query.message.reply_text("❌ Not approved! Contact admin.")
         return
     
-    # User actions
-    if data == "select_country":
+    if data == "user_select_country":
         await show_country_menu(query, user_id)
     
-    elif data.startswith("country_"):
-        country = data.replace("country_", "")
-        user_sessions[user_id] = {"country": country}
+    elif data.startswith("user_country_"):
+        country = data.replace("user_country_", "")
         await show_numbers_for_country(query, user_id, country)
     
-    elif data.startswith("view_"):
-        number = data.replace("view_", "")
+    elif data.startswith("user_view_"):
+        number = data.replace("user_view_", "")
         await show_number_otps(query, user_id, number)
     
-    elif data.startswith("save_"):
-        number = data.replace("save_", "")
+    elif data.startswith("user_save_"):
+        number = data.replace("user_save_", "")
         await save_user_number(query, user_id, number)
     
-    elif data == "my_numbers":
+    elif data == "user_my_numbers":
         await show_my_numbers(query, user_id)
     
-    elif data == "my_otps":
+    elif data == "user_my_otps":
         await show_my_otps(query, user_id)
     
-    elif data == "remove_number":
+    elif data == "user_remove_number":
         await show_remove_menu(query, user_id)
     
-    elif data.startswith("remove_"):
-        idx = int(data.split("_")[1])
+    elif data.startswith("user_remove_"):
+        idx = int(data.split("_")[2])
         await remove_user_number(query, user_id, idx)
     
-    elif data.startswith("refresh_country_"):
-        country = data.replace("refresh_country_", "")
+    elif data.startswith("user_refresh_country_"):
+        country = data.replace("user_refresh_country_", "")
         await show_numbers_for_country(query, user_id, country)
     
-    elif data.startswith("next_"):
+    elif data.startswith("user_next_"):
         parts = data.split("_")
         if len(parts) >= 3:
-            number = parts[1]
-            page = int(parts[2])
+            number = parts[2]
+            page = int(parts[3]) if len(parts) > 3 else 0
             await show_number_otps_with_page(query, user_id, number, page)
     
-    elif data.startswith("prev_"):
+    elif data.startswith("user_prev_"):
         parts = data.split("_")
         if len(parts) >= 3:
-            number = parts[1]
-            page = int(parts[2])
+            number = parts[2]
+            page = int(parts[3]) if len(parts) > 3 else 0
             await show_number_otps_with_page(query, user_id, number, page)
     
-    elif data == "back_menu":
+    elif data == "user_back_menu":
         await show_main_menu(query, user_id)
     
-    elif data == "help":
-        await show_help(query)
+    elif data == "user_help":
+        await show_user_help(query)
 
 async def show_country_menu(query, user_id):
     keyboard = []
     for code, info in COUNTRIES.items():
-        # Count available numbers for this country
         count = len(all_numbers.get(code, []))
-        keyboard.append([InlineKeyboardButton(f"{info['flag']} {info['name']} ({info['code']}) - {count} nums", callback_data=f"country_{code}")])
-    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="back_menu")])
+        keyboard.append([InlineKeyboardButton(f"{info['flag']} {info['name']} ({count})", callback_data=f"user_country_{code}")])
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="user_back_menu")])
     
-    await send_or_edit_message(query, user_id, "🌍 *Select Country*\n\nChoose a country:", InlineKeyboardMarkup(keyboard))
+    try:
+        await query.edit_message_text(
+            "🌍 *Select Country*\n\nChoose a country to get numbers:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+    except:
+        await query.message.reply_text(
+            "🌍 *Select Country*",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
 
 async def show_numbers_for_country(query, user_id, country):
-    # Scrape fresh data
+    # Scrape fresh
     new_otps = scrape_all_sites()
     
     numbers = all_numbers.get(country, [])
     if not numbers:
-        # Try to get from other countries as fallback
         for code, nums in all_numbers.items():
             if nums:
                 numbers = nums
                 break
     
     if not numbers:
-        await send_or_edit_message(query, user_id, 
-            f"📭 *No numbers for {COUNTRIES.get(country, {}).get('name', country)}!*\n\nTry again in 20 seconds.",
-            InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh", callback_data=f"refresh_country_{country}")]]))
+        await query.edit_message_text(
+            f"📭 *No numbers for {COUNTRIES.get(country, {}).get('name', country)}!*\n\nTry again.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh", callback_data=f"user_refresh_country_{country}")]])
+        )
         return
     
-    # Filter out user's saved numbers
     user_numbers = [n["number"] for n in approved_users.get(user_id, {}).get("numbers", [])]
     available = [num for num in numbers if num not in user_numbers][:12]
     
+    if not available:
+        await query.edit_message_text(
+            "📭 *All numbers saved!*\n\nRemove some numbers first.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🗑 Remove", callback_data="user_remove_number")]])
+        )
+        return
+    
     keyboard = []
     for num in available[:10]:
-        keyboard.append([InlineKeyboardButton(f"📱 {num}", callback_data=f"view_{num}")])
-    keyboard.append([InlineKeyboardButton("🔄 Refresh", callback_data=f"refresh_country_{country}")])
-    keyboard.append([InlineKeyboardButton("🌍 Change Country", callback_data="select_country")])
-    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="back_menu")])
+        keyboard.append([InlineKeyboardButton(f"📱 {num}", callback_data=f"user_view_{num}")])
+    keyboard.append([InlineKeyboardButton("🔄 Refresh", callback_data=f"user_refresh_country_{country}")])
+    keyboard.append([InlineKeyboardButton("🌍 Change Country", callback_data="user_select_country")])
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="user_back_menu")])
     
-    await send_or_edit_message(query, user_id,
-        f"📱 *Numbers from {COUNTRIES.get(country, {}).get('flag', '')} {COUNTRIES.get(country, {}).get('name', country)}*\n\n{len(available)} available. Click to view OTPs:",
-        InlineKeyboardMarkup(keyboard))
+    await query.edit_message_text(
+        f"📱 *Numbers from {COUNTRIES.get(country, {}).get('flag', '')} {COUNTRIES.get(country, {}).get('name', country)}*\n\n{len(available)} available:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
 
 async def show_number_otps(query, user_id, number):
     await show_number_otps_with_page(query, user_id, number, 0)
@@ -502,12 +835,12 @@ async def show_number_otps_with_page(query, user_id, number, page):
     otps = otp_storage.get(number, [])
     
     if not otps:
-        await send_or_edit_message(query, user_id,
-            f"📭 *No OTPs for {number}*\n\nNo messages received yet.\nTry again in 20 seconds.",
-            InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh", callback_data=f"view_{number}")]]))
+        await query.edit_message_text(
+            f"📭 *No OTPs for {number}*\n\nNo messages yet.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh", callback_data=f"user_view_{number}")]])
+        )
         return
     
-    # Pagination
     items_per_page = 8
     total_pages = (len(otps) + items_per_page - 1) // items_per_page
     start_idx = page * items_per_page
@@ -521,12 +854,11 @@ async def show_number_otps_with_page(query, user_id, number, page):
         msg += f"   🕐 {otp_info['time'][:16]}\n"
         msg += f"   🌐 {otp_info['source']}\n\n"
     
-    # Navigation
     nav_buttons = []
     if page > 0:
-        nav_buttons.append(InlineKeyboardButton("◀️ Prev", callback_data=f"prev_{number}_{page-1}"))
+        nav_buttons.append(InlineKeyboardButton("◀️ Prev", callback_data=f"user_prev_{number}_{page-1}"))
     if page + 1 < total_pages:
-        nav_buttons.append(InlineKeyboardButton("Next ▶️", callback_data=f"next_{number}_{page+1}"))
+        nav_buttons.append(InlineKeyboardButton("Next ▶️", callback_data=f"user_next_{number}_{page+1}"))
     
     keyboard = []
     if nav_buttons:
@@ -535,14 +867,14 @@ async def show_number_otps_with_page(query, user_id, number, page):
     # Save button
     user_numbers = [n["number"] for n in approved_users.get(user_id, {}).get("numbers", [])]
     if number not in user_numbers:
-        keyboard.append([InlineKeyboardButton("💾 Save Number", callback_data=f"save_{number}")])
+        keyboard.append([InlineKeyboardButton("💾 Save Number", callback_data=f"user_save_{number}")])
     
-    keyboard.append([InlineKeyboardButton("🔄 Refresh", callback_data=f"view_{number}")])
-    keyboard.append([InlineKeyboardButton("🌍 Back to Countries", callback_data="select_country")])
+    keyboard.append([InlineKeyboardButton("🔄 Refresh", callback_data=f"user_view_{number}")])
+    keyboard.append([InlineKeyboardButton("🌍 Back to Countries", callback_data="user_select_country")])
     
-    await send_or_edit_message(query, user_id, msg, InlineKeyboardMarkup(keyboard))
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
     
-    # Save to user history
+    # Save to history
     user_data = approved_users.get(user_id, {})
     for otp_info in page_otps:
         if otp_info["otp"] not in [h["otp"] for h in user_data.get("otp_history", [])]:
@@ -562,9 +894,10 @@ async def save_user_number(query, user_id, number):
     user_numbers = user_data.get("numbers", [])
     
     if len(user_numbers) >= 5:
-        await send_or_edit_message(query, user_id,
-            "❌ *Limit reached!* Maximum 5 numbers.",
-            InlineKeyboardMarkup([[InlineKeyboardButton("🗑 Remove", callback_data="remove_number")]]))
+        await query.edit_message_text(
+            "❌ *Limit reached!* (5 numbers max)",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🗑 Remove", callback_data="user_remove_number")]])
+        )
         return
     
     if number not in [n["number"] for n in user_numbers]:
@@ -572,19 +905,21 @@ async def save_user_number(query, user_id, number):
         user_data["numbers"] = user_numbers
         save_data()
         
-        await send_or_edit_message(query, user_id,
-            f"✅ *Saved!*\n\n📱 `{number}`\n\nView from 'My Numbers'.",
-            InlineKeyboardMarkup([[InlineKeyboardButton("📋 My Numbers", callback_data="my_numbers")]]),
-            parse_mode="Markdown")
+        await query.edit_message_text(
+            f"✅ *Saved!*\n\n📱 `{number}`",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 My Numbers", callback_data="user_my_numbers")]]),
+            parse_mode="Markdown"
+        )
 
 async def show_my_numbers(query, user_id):
     user_data = approved_users.get(user_id, {})
     user_numbers = user_data.get("numbers", [])
     
     if not user_numbers:
-        await send_or_edit_message(query, user_id,
-            "📭 *No saved numbers*\n\nGo to 'Select Country' to add.",
-            InlineKeyboardMarkup([[InlineKeyboardButton("🌍 Select Country", callback_data="select_country")]]))
+        await query.edit_message_text(
+            "📭 *No saved numbers*",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🌍 Get Numbers", callback_data="user_select_country")]])
+        )
         return
     
     msg = f"📱 *Your Numbers* ({len(user_numbers)}/5)\n\n"
@@ -593,49 +928,49 @@ async def show_my_numbers(query, user_id):
         msg += f"{i}. `{num_info['number']}`\n   └ {otp_count} OTPs\n\n"
     
     keyboard = [
-        [InlineKeyboardButton("🔐 View My OTPs", callback_data="my_otps")],
-        [InlineKeyboardButton("🗑 Remove", callback_data="remove_number")],
-        [InlineKeyboardButton("🌍 Get More", callback_data="select_country")],
-        [InlineKeyboardButton("🔙 Back", callback_data="back_menu")]
+        [InlineKeyboardButton("🔐 View OTPs", callback_data="user_my_otps")],
+        [InlineKeyboardButton("🗑 Remove", callback_data="user_remove_number")],
+        [InlineKeyboardButton("🌍 Get More", callback_data="user_select_country")],
+        [InlineKeyboardButton("🔙 Back", callback_data="user_back_menu")]
     ]
     
-    await send_or_edit_message(query, user_id, msg, InlineKeyboardMarkup(keyboard))
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def show_my_otps(query, user_id):
     user_data = approved_users.get(user_id, {})
     user_otps = user_data.get("otp_history", [])
     
     if not user_otps:
-        await send_or_edit_message(query, user_id,
+        await query.edit_message_text(
             "📭 *No OTPs yet*",
-            InlineKeyboardMarkup([[InlineKeyboardButton("🌍 Get Numbers", callback_data="select_country")]]))
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🌍 Get Numbers", callback_data="user_select_country")]])
+        )
         return
     
-    msg = f"🔐 *Your OTP History* (Last 15)\n\n"
+    msg = f"🔐 *Your OTPs* (Last 15)\n\n"
     for i, otp_info in enumerate(user_otps[-15:], 1):
         msg += f"{i}. `{otp_info['otp']}`\n"
         msg += f"   ├ 📱 {otp_info['number']}\n"
         msg += f"   ├ 🏷️ {otp_info.get('service', 'GENERIC')}\n"
         msg += f"   └ 🕐 {otp_info['time'][:16]}\n\n"
     
-    keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="my_numbers")]]
-    await send_or_edit_message(query, user_id, msg, InlineKeyboardMarkup(keyboard))
+    keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="user_my_numbers")]]
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def show_remove_menu(query, user_id):
     user_data = approved_users.get(user_id, {})
     user_numbers = user_data.get("numbers", [])
     
     if not user_numbers:
-        await send_or_edit_message(query, user_id, "📭 No numbers to remove!",
-            InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_menu")]]))
+        await query.edit_message_text("📭 No numbers to remove!")
         return
     
     keyboard = []
     for i, num_info in enumerate(user_numbers):
-        keyboard.append([InlineKeyboardButton(f"🗑 {num_info['number']}", callback_data=f"remove_{i}")])
-    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="my_numbers")])
+        keyboard.append([InlineKeyboardButton(f"🗑 {num_info['number']}", callback_data=f"user_remove_{i}")])
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="user_my_numbers")])
     
-    await send_or_edit_message(query, user_id, "🗑 *Select number to remove:*", InlineKeyboardMarkup(keyboard))
+    await query.edit_message_text("🗑 *Select number to remove:*", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def remove_user_number(query, user_id, index):
     user_data = approved_users.get(user_id, {})
@@ -646,23 +981,55 @@ async def remove_user_number(query, user_id, index):
         user_data["numbers"] = user_numbers
         save_data()
         
-        await send_or_edit_message(query, user_id,
-            f"✅ *Removed*\n\n`{removed['number']}`",
-            InlineKeyboardMarkup([[InlineKeyboardButton("🌍 Get More", callback_data="select_country")]]),
-            parse_mode="Markdown")
+        await query.edit_message_text(
+            f"✅ *Removed* `{removed['number']}`",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🌍 Get More", callback_data="user_select_country")]]),
+            parse_mode="Markdown"
+        )
 
-async def show_help(query):
-    await send_or_edit_message(query, "help",
+async def show_user_help(query):
+    await query.edit_message_text(
         "📖 *Help*\n\n"
-        "1. Select Country → Choose a country\n"
-        "2. Pick a number → View its OTPs\n"
-        "3. Save Number → Add to your list\n"
-        "4. My Numbers → View saved numbers\n"
-        "5. My OTPs → See all OTPs received\n\n"
+        "1. *Select Country* → Choose a country\n"
+        "2. *Pick number* → View its OTPs\n"
+        "3. *Save number* → Add to your list\n"
+        "4. *My Numbers* → View saved numbers\n"
+        "5. *My OTPs* → See all OTPs\n\n"
         "*Limits:* 5 numbers max\n"
-        "*Note:* Numbers are public (shared)",
-        InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_menu")]]),
-        parse_mode="Markdown")
+        "*Note:* Numbers are public",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="user_back_menu")]]),
+        parse_mode="Markdown"
+    )
+
+# ==================== MAIN ====================
+
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle text messages"""
+    user_id = str(update.effective_user.id)
+    text = update.message.text
+    
+    # Admin broadcast
+    if user_id == str(ADMIN_ID) and text.startswith("/send "):
+        msg = text.replace("/send ", "")
+        sent = 0
+        for uid in approved_users.keys():
+            try:
+                await context.bot.send_message(chat_id=int(uid), text=f"📢 *ANNOUNCEMENT*\n\n{msg}", parse_mode="Markdown")
+                sent += 1
+                await asyncio.sleep(0.1)
+            except:
+                pass
+        await update.message.reply_text(f"✅ Broadcast sent to {sent} users!")
+        return
+    
+    # Add banned word
+    if user_id == str(ADMIN_ID) and text.startswith("/addword "):
+        word = text.replace("/addword ", "").strip().lower()
+        if word and word not in banned_words:
+            banned_words.append(word)
+            save_data()
+            await update.message.reply_text(f"✅ Added `{word}` to banned words!", parse_mode="Markdown")
+        return
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -673,13 +1040,13 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_users = len(approved_users)
     total_numbers = sum(len(u.get("numbers", [])) for u in approved_users.values())
     total_otps = sum(len(u.get("otp_history", [])) for u in approved_users.values())
-    
     available = sum(len(n) for n in all_numbers.values())
     
     await update.message.reply_text(
-        f"📊 *ADMIN STATUS*\n\n"
+        f"📊 *STATUS*\n\n"
         f"👥 Users: {total_users}\n"
         f"⏳ Pending: {len(pending_users)}\n"
+        f"🚫 Blocked: {len(blocked_users)}\n"
         f"📱 Saved: {total_numbers}\n"
         f"🔐 OTPs: {total_otps}\n"
         f"📡 Available: {available}\n"
@@ -688,7 +1055,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def auto_scrape():
-    """Background scraper - runs every 15 seconds"""
+    """Background scraper"""
     while True:
         try:
             start = time.time()
@@ -700,15 +1067,17 @@ async def auto_scrape():
         await asyncio.sleep(15)
 
 def main():
-    print("=" * 50)
-    print("🤖 OTP FORWARDER BOT")
-    print("=" * 50)
+    print("=" * 55)
+    print("🤖 OTP FORWARDER BOT v4.0 - FULL ADMIN PANEL")
+    print("=" * 55)
     
     load_data()
     
     print(f"✅ Users: {len(approved_users)}")
+    print(f"🚫 Blocked: {len(blocked_users)}")
+    print(f"⏳ Pending: {len(pending_users)}")
     print(f"🌐 Sites: {len(SITES)}")
-    print("=" * 50)
+    print("=" * 55)
     
     # Start background scraper
     loop = asyncio.new_event_loop()
@@ -717,11 +1086,23 @@ def main():
     
     # Start bot
     app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("status", status_command))
-    app.add_handler(CallbackQueryHandler(button_handler))
     
-    print("✅ Bot running!")
+    # Commands
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("admin", admin_panel))
+    app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("send", message_handler))
+    app.add_handler(CommandHandler("addword", message_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    
+    # Callbacks - separate for admin and user
+    app.add_handler(CallbackQueryHandler(admin_button_handler, pattern="^admin_"))
+    app.add_handler(CallbackQueryHandler(user_button_handler, pattern="^user_"))
+    app.add_handler(CallbackQueryHandler(admin_button_handler, pattern="^(approve_user_|reject_user_|block_user_|unblock_user_|toggle_site_|add_banned_|remove_banned_|view_user_|delete_user_)"))
+    
+    print("✅ Bot running! Admin panel available via /admin")
+    print("=" * 55)
+    
     app.run_polling()
 
 if __name__ == "__main__":
